@@ -12,10 +12,13 @@
 //! ## Modules
 //! - `group`: Core Group data structure and state management
 //! - `contribution`: Contribution record tracking for member payments
+//! - `payout`: Payout record tracking for fund distributions
 
 pub mod contribution;
 pub mod group;
+pub mod payout;
 
 // Re-export for convenience
 pub use contribution::ContributionRecord;
 pub use group::Group;
+pub use payout::PayoutRecord;
