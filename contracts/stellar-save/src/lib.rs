@@ -353,6 +353,37 @@ impl StellarSaveContract {
         env.storage().persistent().get(&key).unwrap_or(0)
     }
 
+    /// Gets the contribution status for all members in a specific cycle.
+    /// 
+    /// # Arguments
+    /// * `env` - Soroban environment
+    /// * `group_id` - ID of the group
+    /// * `cycle_number` - The cycle number to check
+    /// 
+    /// # Returns
+    /// * `Ok(Vec<(Address, bool)>)` - Vector of tuples with member address and contribution status
+    /// * `Err(StellarSaveError)` if group not found
+    pub fn get_contribution_status(
+        env: Env,
+        group_id: u64,
+        cycle_number: u32,
+    ) -> Result<Vec<(Address, bool)>, StellarSaveError> {
+        let members_key = StorageKeyBuilder::group_members(group_id);
+        let members: Vec<Address> = env.storage()
+            .persistent()
+            .get(&members_key)
+            .ok_or(StellarSaveError::GroupNotFound)?;
+        
+        let mut status = Vec::new(&env);
+        for member in members.iter() {
+            let contrib_key = StorageKeyBuilder::contribution_individual(group_id, cycle_number, member.clone());
+            let has_contributed = env.storage().persistent().has(&contrib_key);
+            status.push_back((member, has_contributed));
+        }
+        
+        Ok(status)
+    }
+
     /// Allows a member to contribute to the current cycle.
     /// 
     /// # Arguments
@@ -762,5 +793,165 @@ mod tests {
         // Action: Try to contribute while group is pending
         env.mock_all_auths();
         client.contribute(&group_id, &member);
+    }
+
+    #[test]
+    fn test_get_contribution_status_all_contributed() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, StellarSaveContract);
+        let client = StellarSaveContractClient::new(&env, &contract_id);
+        
+        let member1 = Address::generate(&env);
+        let member2 = Address::generate(&env);
+        let member3 = Address::generate(&env);
+
+        let group_id = 1;
+        let cycle = 0;
+        
+        // Setup: Create members list
+        let mut members = Vec::new(&env);
+        members.push_back(member1.clone());
+        members.push_back(member2.clone());
+        members.push_back(member3.clone());
+        
+        let members_key = StorageKeyBuilder::group_members(group_id);
+        env.storage().persistent().set(&members_key, &members);
+        
+        // Record contributions for all members
+        let contrib1 = ContributionRecord::new(member1.clone(), group_id, cycle, 100, env.ledger().timestamp());
+        let contrib2 = ContributionRecord::new(member2.clone(), group_id, cycle, 100, env.ledger().timestamp());
+        let contrib3 = ContributionRecord::new(member3.clone(), group_id, cycle, 100, env.ledger().timestamp());
+        
+        env.storage().persistent().set(&StorageKeyBuilder::contribution_individual(group_id, cycle, member1.clone()), &contrib1);
+        env.storage().persistent().set(&StorageKeyBuilder::contribution_individual(group_id, cycle, member2.clone()), &contrib2);
+        env.storage().persistent().set(&StorageKeyBuilder::contribution_individual(group_id, cycle, member3.clone()), &contrib3);
+
+        // Action: Get contribution status
+        let status = client.get_contribution_status(&group_id, &cycle);
+        
+        // Verify: All members have contributed
+        assert_eq!(status.len(), 3);
+        assert_eq!(status.get(0).unwrap().1, true);
+        assert_eq!(status.get(1).unwrap().1, true);
+        assert_eq!(status.get(2).unwrap().1, true);
+    }
+
+    #[test]
+    fn test_get_contribution_status_partial() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, StellarSaveContract);
+        let client = StellarSaveContractClient::new(&env, &contract_id);
+        
+        let member1 = Address::generate(&env);
+        let member2 = Address::generate(&env);
+        let member3 = Address::generate(&env);
+
+        let group_id = 1;
+        let cycle = 0;
+        
+        // Setup: Create members list
+        let mut members = Vec::new(&env);
+        members.push_back(member1.clone());
+        members.push_back(member2.clone());
+        members.push_back(member3.clone());
+        
+        let members_key = StorageKeyBuilder::group_members(group_id);
+        env.storage().persistent().set(&members_key, &members);
+        
+        // Record contributions for only member1 and member3
+        let contrib1 = ContributionRecord::new(member1.clone(), group_id, cycle, 100, env.ledger().timestamp());
+        let contrib3 = ContributionRecord::new(member3.clone(), group_id, cycle, 100, env.ledger().timestamp());
+        
+        env.storage().persistent().set(&StorageKeyBuilder::contribution_individual(group_id, cycle, member1.clone()), &contrib1);
+        env.storage().persistent().set(&StorageKeyBuilder::contribution_individual(group_id, cycle, member3.clone()), &contrib3);
+
+        // Action: Get contribution status
+        let status = client.get_contribution_status(&group_id, &cycle);
+        
+        // Verify: member1 and member3 contributed, member2 did not
+        assert_eq!(status.len(), 3);
+        assert_eq!(status.get(0).unwrap().1, true);  // member1
+        assert_eq!(status.get(1).unwrap().1, false); // member2
+        assert_eq!(status.get(2).unwrap().1, true);  // member3
+    }
+
+    #[test]
+    fn test_get_contribution_status_none_contributed() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, StellarSaveContract);
+        let client = StellarSaveContractClient::new(&env, &contract_id);
+        
+        let member1 = Address::generate(&env);
+        let member2 = Address::generate(&env);
+
+        let group_id = 1;
+        let cycle = 0;
+        
+        // Setup: Create members list with no contributions
+        let mut members = Vec::new(&env);
+        members.push_back(member1.clone());
+        members.push_back(member2.clone());
+        
+        let members_key = StorageKeyBuilder::group_members(group_id);
+        env.storage().persistent().set(&members_key, &members);
+
+        // Action: Get contribution status
+        let status = client.get_contribution_status(&group_id, &cycle);
+        
+        // Verify: No members have contributed
+        assert_eq!(status.len(), 2);
+        assert_eq!(status.get(0).unwrap().1, false);
+        assert_eq!(status.get(1).unwrap().1, false);
+    }
+
+    #[test]
+    #[should_panic(expected = "Status(ContractError(1001))")] // GroupNotFound
+    fn test_get_contribution_status_group_not_found() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, StellarSaveContract);
+        let client = StellarSaveContractClient::new(&env, &contract_id);
+
+        // Action: Try to get status for non-existent group
+        client.get_contribution_status(&999, &0);
+    }
+
+    #[test]
+    fn test_get_contribution_status_different_cycles() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, StellarSaveContract);
+        let client = StellarSaveContractClient::new(&env, &contract_id);
+        
+        let member1 = Address::generate(&env);
+        let member2 = Address::generate(&env);
+
+        let group_id = 1;
+        
+        // Setup: Create members list
+        let mut members = Vec::new(&env);
+        members.push_back(member1.clone());
+        members.push_back(member2.clone());
+        
+        let members_key = StorageKeyBuilder::group_members(group_id);
+        env.storage().persistent().set(&members_key, &members);
+        
+        // Record contributions for cycle 0
+        let contrib1_cycle0 = ContributionRecord::new(member1.clone(), group_id, 0, 100, env.ledger().timestamp());
+        env.storage().persistent().set(&StorageKeyBuilder::contribution_individual(group_id, 0, member1.clone()), &contrib1_cycle0);
+        
+        // Record contributions for cycle 1
+        let contrib2_cycle1 = ContributionRecord::new(member2.clone(), group_id, 1, 100, env.ledger().timestamp());
+        env.storage().persistent().set(&StorageKeyBuilder::contribution_individual(group_id, 1, member2.clone()), &contrib2_cycle1);
+
+        // Action: Get contribution status for cycle 0
+        let status_cycle0 = client.get_contribution_status(&group_id, &0);
+        assert_eq!(status_cycle0.len(), 2);
+        assert_eq!(status_cycle0.get(0).unwrap().1, true);  // member1 contributed
+        assert_eq!(status_cycle0.get(1).unwrap().1, false); // member2 did not
+        
+        // Action: Get contribution status for cycle 1
+        let status_cycle1 = client.get_contribution_status(&group_id, &1);
+        assert_eq!(status_cycle1.len(), 2);
+        assert_eq!(status_cycle1.get(0).unwrap().1, false); // member1 did not
+        assert_eq!(status_cycle1.get(1).unwrap().1, true);  // member2 contributed
     }
 }
